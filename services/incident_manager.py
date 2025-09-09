@@ -3,6 +3,7 @@ from datetime import datetime, timedelta
 from typing import Optional, List, Dict
 import json
 from config.settings import settings
+from zoneinfo import ZoneInfo
 from services.redis_memory import RedisMemory
 from services.google_sheets import GoogleSheetsService
 from services.telegram import TelegramService
@@ -231,7 +232,11 @@ class IncidentManager:
                     if incident.get('status') == 'OPEN':
                         try:
                             deadline = datetime.fromisoformat(incident['deadline'])
-                            now = datetime.now()
+                            # если старые записи без tz — считаем, что они в Asia/Tashkent
+                            if deadline.tzinfo is None:
+                                    deadline = deadline.replace(tzinfo=ZoneInfo('Asia/Tashkent'))
+                            # "сейчас" тоже делаем aware в той же зоне
+                            now = datetime.now(ZoneInfo('Asia/Tashkent'))
                             time_left = deadline - now
                             
                             # Проверяем просрочку
