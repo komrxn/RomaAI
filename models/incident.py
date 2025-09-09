@@ -2,6 +2,8 @@ from datetime import datetime, timedelta
 from typing import Optional
 from pydantic import BaseModel, Field
 from config.settings import settings
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 class Incident(BaseModel):
     """Модель инцидента с расширенными полями"""
@@ -44,20 +46,23 @@ class Incident(BaseModel):
 
     @classmethod
     def get_current_date(cls) -> str:
-        """Получение текущей даты"""
-        return datetime.now().strftime('%Y-%m-%d')
-    
+        """Получение текущей даты по Ташкенту"""
+        tashkent_time = datetime.now(ZoneInfo('Asia/Tashkent'))
+        return tashkent_time.strftime('%Y-%m-%d')
+
     @classmethod
     def get_current_time(cls) -> str:
-        """Получение текущего времени"""
-        return datetime.now().strftime('%H:%M')
-    
+        """Получение текущего времени по Ташкенту"""
+        tashkent_time = datetime.now(ZoneInfo('Asia/Tashkent'))
+        return tashkent_time.strftime('%H:%M')
+
     def calculate_deadline(self) -> str:
-        """Рассчитывает дедлайн на основе приоритета"""
+        """Рассчитывает дедлайн с учетом часового пояса Ташкента"""
         hours = settings.DEADLINES.get(self.priority, 24)
-        deadline_time = datetime.now() + timedelta(hours=hours)
+        tashkent_time = datetime.now(ZoneInfo('Asia/Tashkent'))
+        deadline_time = tashkent_time + timedelta(hours=hours)
         return deadline_time.isoformat()
-    
+        
     def get_responsible_id(self) -> Optional[str]:
         """Получает ID ответственного по отделу"""
         return settings.DEPARTMENT_HEADS.get(self.department)

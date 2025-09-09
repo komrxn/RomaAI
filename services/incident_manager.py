@@ -58,8 +58,10 @@ class IncidentManager:
     
     def _calculate_deadline(self, priority: str) -> str:
         """Рассчитывает дедлайн"""
+        from zoneinfo import ZoneInfo
         hours = settings.DEADLINES.get(priority, 24)
-        deadline = datetime.now() + timedelta(hours=hours)
+        tashkent_time = datetime.now(ZoneInfo('Asia/Tashkent'))
+        deadline = tashkent_time + timedelta(hours=hours)
         return deadline.isoformat()
     
     def get_incident(self, incident_id: str) -> Optional[Dict]:
