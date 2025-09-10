@@ -12,6 +12,7 @@ import asyncio
 import re
 from services.voice_handler import VoiceHandler
 from telegram import Voice
+from zoneinfo import ZoneInfo
 
 async def show_typing(context, chat_id):
     """Показывает индикатор набора"""
@@ -138,7 +139,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if incident:
             # Добавляем дедлайн и ответственного
-            incident.deadline = incident.calculate_deadline()
+            deadline_info = ai_agent.calculate_smart_deadline(
+                incident_data, 
+                full_message  # передаем полное сообщение для контекста
+            )
+            incident.deadline = deadline_info['deadline']
+            deadline_reasoning = deadline_info['reasoning']
             incident.responsible_id = incident.get_responsible_id()
             
             # Сохраняем в Sheets
@@ -157,6 +163,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     responsible_message = (
                         f"🚨 Вам назначен новый инцидент!\n\n"
                         f"{incident.to_telegram_message(include_deadline=True)}\n\n"
+                        f"💡 Обоснование срока: {deadline_reasoning}\n\n"
                         f"Пожалуйста, решите проблему до дедлайна.\n"
                         f"После решения отправьте:\n"
                         f"/resolve {incident.id} [описание решения]"
@@ -179,6 +186,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"🏢 Отдел: {incident.department}\n"
                 f"⚠️ Приоритет: {incident.priority}\n"
                 f"⏰ Дедлайн: {deadline_str}\n"
+                f"💡 Обоснование: {deadline_reasoning}\n"
                 f"👤 Ответственный уведомлен\n\n"
                 f"Менеджеры займутся решением проблемы."
             )
@@ -193,7 +201,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "department": incident.department,
                 "priority": incident.priority,
                 "author": author_info,
-                "deadline": incident.deadline
+                "deadline": incident.deadline,
+                "deadline_reasoning": deadline_reasoning
             })
             
             # Очищаем контекст
@@ -653,11 +662,18 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             
             if incident:
+                
                 await show_typing(context, chat_id)
                 
-                incident.deadline = incident.calculate_deadline()
+                # Добавляем дедлайн и ответственного
+                deadline_info = ai_agent.calculate_smart_deadline(
+                    incident_data, 
+                    full_message  # передаем полное сообщение для контекста
+                )
+                incident.deadline = deadline_info['deadline']
+                deadline_reasoning = deadline_info['reasoning']
                 incident.responsible_id = incident.get_responsible_id()
-                
+
                 # Сохраняем
                 sheets_ok = sheets_service.append_incident(incident)
                 incident_dict = incident.dict()
@@ -671,6 +687,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         responsible_message = (
                             f"🚨 Вам назначен новый инцидент!\n\n"
                             f"{incident.to_telegram_message(include_deadline=True)}\n\n"
+                            f"💡 Обоснование срока: {deadline_reasoning}\n\n"
                             f"Пожалуйста, решите проблему до дедлайна.\n"
                             f"После решения отправьте:\n"
                             f"/resolve {incident.id} [описание решения]"
@@ -693,6 +710,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     f"🏢 Отдел: {incident.department}\n"
                     f"⚠️ Приоритет: {incident.priority}\n"
                     f"⏰ Дедлайн: {deadline_str}\n"
+                    f"💡 Обоснование: {deadline_reasoning}\n"
                     f"👤 Ответственный уведомлен\n\n"
                     f"Менеджеры займутся решением проблемы."
                 )
@@ -706,7 +724,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "department": incident.department,
                     "priority": incident.priority,
                     "author": author_info,
-                    "deadline": incident.deadline
+                    "deadline": incident.deadline,
+                    "deadline_reasoning": deadline_reasoning
                 })
                 
                 if user_id in user_contexts:

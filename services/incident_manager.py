@@ -32,8 +32,11 @@ class IncidentManager:
             incident_key = self._get_incident_key(incident['id'])
             
             # Добавляем временные метки
-            incident['created_at'] = datetime.now().isoformat()
-            incident['deadline'] = self._calculate_deadline(incident['priority'])
+            incident['created_at'] = datetime.now(ZoneInfo('Asia/Tashkent')).isoformat()
+            # Дедлайн уже должен быть рассчитан AI, проверяем
+            if 'deadline' not in incident:
+                raise ValueError("Дедлайн должен быть рассчитан до сохранения инцидента")
+            
             incident['responsible_id'] = settings.DEPARTMENT_HEADS.get(incident['department'])
             incident['status'] = 'OPEN'
             incident['reminders_sent'] = '[]'  # Сохраняем как JSON строку
@@ -57,13 +60,6 @@ class IncidentManager:
             print(f"Ошибка сохранения инцидента: {e}")
             return False
     
-    def _calculate_deadline(self, priority: str) -> str:
-        """Рассчитывает дедлайн"""
-        from zoneinfo import ZoneInfo
-        hours = settings.DEADLINES.get(priority, 24)
-        tashkent_time = datetime.now(ZoneInfo('Asia/Tashkent'))
-        deadline = tashkent_time + timedelta(hours=hours)
-        return deadline.isoformat()
     
     def get_incident(self, incident_id: str) -> Optional[Dict]:
         """Получает инцидент из Redis"""

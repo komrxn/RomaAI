@@ -44,14 +44,6 @@ class Settings:
         'Низкий': ['предложения', 'улучшение', 'мелкие неполадки']
     }
     
-    # Дедлайны по приоритетам (в часах)
-    DEADLINES = {
-        'Критический': 1,    # 1 час
-        'Высокий': 5,        # 3 часа но щас 
-        'Средний': 9,       # 24 часа (1 день)
-        'Низкий': 12,        # 72 часа (3 дня)
-    }
-    
     # Интервалы напоминаний (в минутах до дедлайна)
     REMINDER_INTERVALS = [60, 30, 10]  # За час, полчаса и 10 минут
     
@@ -61,11 +53,11 @@ class Settings:
         'IT': os.getenv('DEPT_IT_ID', '2040216796'), #komron
         'Marketing': os.getenv('DEPT_MARKETING_ID', '765305446'), #amir
         'Бухгалтерия': os.getenv('DEPT_ACCOUNTING_ID', '6321655859'), #umid
-        'Закуп и снабжение': os.getenv('DEPT_SUPPLY_ID', '6321655859'), #umid
+        'Закуп и снабжение': os.getenv('DEPT_SUPPLY_ID', '5745948866'), #madiyor
         'Контроль качества': os.getenv('DEPT_QUALITY_ID', '7232563857'), 
         'Стандартизация и сервис': os.getenv('DEPT_SERVICE_ID', '962959948'), # said
-        'Доставка и Колл-центр': os.getenv('DEPT_DELIVERY_ID', '6800942148'), # 
-        'Главный офис': os.getenv('DEPT_HEAD_ID', '6321655859'), #Timur aka
+        'Доставка и Колл-центр': os.getenv('DEPT_DELIVERY_ID', '6800942148'), # umurbek
+        'Главный офис': os.getenv('DEPT_HEAD_ID', '7289727426'), #Timur aka
     }
     
     # Статусы инцидентов

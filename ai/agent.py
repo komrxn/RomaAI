@@ -4,6 +4,7 @@ from typing import Dict, Optional, List, Tuple
 from datetime import datetime, timedelta
 from config.settings import settings
 from models.incident import Incident
+from zoneinfo import ZoneInfo
 
 class IncidentAIAgent:
     """AI агент для анализа и обработки инцидентов"""
@@ -204,6 +205,119 @@ class IncidentAIAgent:
         except Exception as e:
             print(f"Ошибка создания инцидента: {e}")
             return None
+    
+    def calculate_smart_deadline(self, incident_data: Dict, original_message: str) -> Dict:
+        """Рассчитывает умный дедлайн с учетом контекста и рабочего времени"""
+        try:
+            current_time = datetime.now(ZoneInfo('Asia/Tashkent'))
+            
+            deadline_prompt = f"""Ты эксперт по управлению временем в ресторанном бизнесе Roma Pizza.
+
+РАБОЧЕЕ ВРЕМЯ: 08:00 - 23:00 (Ташкент, UTC+5)
+ТЕКУЩЕЕ ВРЕМЯ: {current_time.strftime('%Y-%m-%d %H:%M')}
+
+ИНЦИДЕНТ:
+- Приоритет: {incident_data.get('priority')}
+- Проблема: {incident_data.get('short_description')}
+- Полное описание: {original_message}
+- Филиал: {incident_data.get('branch')}
+- Отдел: {incident_data.get('department')}
+
+ПРАВИЛА РАСЧЕТА ДЕДЛАЙНА:
+1. Критические проблемы (пожар, отравление, драка) - максимум 1-2 часа даже ночью
+2. Если сейчас нерабочее время (23:00-08:00):
+   - Критические - решаются сразу
+   - Остальные - переносятся на начало рабочего дня (08:00)
+3. Учитывай реальное время решения:
+   - Замена оборудования: минимум 4-8 часов (нужно найти и привезти)
+   - Доставка продуктов: 2-4 часа в рабочее время
+   - IT проблемы: 1-4 часа в зависимости от сложности
+   - Проблемы с персоналом: 2-24 часа (найти замену)
+4. Если до конца рабочего дня (23:00) меньше 2 часов и проблема не критическая - перенеси на утро
+5. Учитывай контекст: "срочно нужно сегодня" - постарайся уложиться в текущий день
+
+ВАЖНО: Будь реалистичен! Лучше дать больше времени чем поставить невыполнимый дедлайн.
+
+Ответь ТОЛЬКО валидным JSON без дополнительного текста:
+{{
+    "deadline_hours": число часов от текущего момента (может быть дробным),
+    "deadline_datetime": "YYYY-MM-DD HH:MM" (точное время дедлайна в формате 24ч),
+    "reasoning": "краткое объяснение почему именно такой дедлайн на русском языке"
+}}"""
+
+            response = self.client.chat.completions.create(
+                model=settings.OPENAI_MODEL,
+                messages=[
+                    {"role": "system", "content": "Ты эксперт по расчету реалистичных дедлайнов. Отвечай ТОЛЬКО валидным JSON без дополнительного текста."},
+                    {"role": "user", "content": deadline_prompt}
+                ],
+                temperature=0.3,
+                response_format={"type": "json_object"}  # Форсируем JSON ответ
+            )
+            
+            content = response.choices[0].message.content.strip()
+            
+            # Парсим JSON
+            try:
+                result = json.loads(content)
+            except json.JSONDecodeError as e:
+                print(f"Ошибка парсинга JSON от AI: {content}")
+                print(f"Детали ошибки: {e}")
+                # Пробуем извлечь JSON из текста
+                import re
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    result = json.loads(json_match.group())
+                else:
+                    raise ValueError("Не удалось извлечь JSON из ответа")
+            
+            # Валидация и корректировка
+            deadline_dt = datetime.strptime(result['deadline_datetime'], '%Y-%m-%d %H:%M')
+            deadline_dt = deadline_dt.replace(tzinfo=ZoneInfo('Asia/Tashkent'))
+            
+            # Для некритических - проверяем рабочее время
+            if incident_data.get('priority') != 'Критический':
+                if deadline_dt.hour >= 23 or deadline_dt.hour < 8:
+                    # Переносим на 8 утра
+                    if deadline_dt.hour >= 23:
+                        next_day = deadline_dt.replace(hour=8, minute=0) + timedelta(days=1)
+                    else:
+                        next_day = deadline_dt.replace(hour=8, minute=0)
+                        
+                    deadline_dt = next_day
+                    result['reasoning'] += " (скорректировано на рабочее время)"
+            
+            return {
+                'deadline': deadline_dt.isoformat(),
+                'reasoning': result['reasoning'],
+                'hours': result.get('deadline_hours', 24)
+            }
+            
+        except Exception as e:
+            print(f"Ошибка расчета умного дедлайна: {e}")
+            # Fallback логика без DEADLINES
+            current_time = datetime.now(ZoneInfo('Asia/Tashkent'))
+            priority_hours = {
+                'Критический': 1,
+                'Высокий': 4,
+                'Средний': 24,
+                'Низкий': 72
+            }
+            hours = priority_hours.get(incident_data.get('priority', 'Средний'), 24)
+            deadline = current_time + timedelta(hours=hours)
+            
+            # Корректируем на рабочее время для некритических
+            if incident_data.get('priority') != 'Критический' and (deadline.hour >= 23 or deadline.hour < 8):
+                if deadline.hour >= 23:
+                    deadline = deadline.replace(hour=8, minute=0) + timedelta(days=1)
+                else:
+                    deadline = deadline.replace(hour=8, minute=0)
+                    
+            return {
+                'deadline': deadline.isoformat(),
+                'reasoning': f'Стандартный срок {hours}ч для приоритета {incident_data.get("priority")}',
+                'hours': hours
+            }
     
     def analyze_incidents_data(self, incidents: List[List[str]], query: str, 
                               global_stats: Optional[Dict] = None) -> str:

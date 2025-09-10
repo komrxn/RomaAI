@@ -56,12 +56,6 @@ class Incident(BaseModel):
         tashkent_time = datetime.now(ZoneInfo('Asia/Tashkent'))
         return tashkent_time.strftime('%H:%M')
 
-    def calculate_deadline(self) -> str:
-        """Рассчитывает дедлайн с учетом часового пояса Ташкента"""
-        hours = settings.DEADLINES.get(self.priority, 24)
-        tashkent_time = datetime.now(ZoneInfo('Asia/Tashkent'))
-        deadline_time = tashkent_time + timedelta(hours=hours)
-        return deadline_time.isoformat()
         
     def get_responsible_id(self) -> Optional[str]:
         """Получает ID ответственного по отделу"""
