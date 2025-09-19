@@ -277,3 +277,95 @@ class IncidentManager:
         )
         
         await self.bot.send_message(chat_id=responsible_id, text=message)
+    
+    def get_pending_incident_for_user_simple(self, user_id: str) -> Optional[Dict]:
+        """
+        Простая проверка через Redis - ищем по ключу user_id
+        """
+        try:
+            # Ищем все ключи инцидентов
+            pattern = "roma_bot:incident:*"
+            incident_keys = self.redis.redis_client.keys(pattern)
+            print(f"🔍 Простая проверка: ищем инциденты для user_id={user_id}")
+            print(f"🔍 Найдено ключей инцидентов: {len(incident_keys)}")
+            
+            for key in incident_keys:
+                # Получаем user_id из инцидента
+                incident_user_id = self.redis.redis_client.hget(key, 'user_id')
+                if incident_user_id:
+                    incident_user_id = incident_user_id.decode() if isinstance(incident_user_id, bytes) else str(incident_user_id)
+                    print(f"🔍 Проверяем ключ {key}: user_id={incident_user_id}")
+                    
+                    if incident_user_id == user_id:
+                        # Получаем статус и has_image
+                        status = self.redis.redis_client.hget(key, 'status')
+                        has_image = self.redis.redis_client.hget(key, 'has_image')
+                        
+                        if status:
+                            status = status.decode() if isinstance(status, bytes) else str(status)
+                        if has_image:
+                            has_image = has_image.decode() if isinstance(has_image, bytes) else str(has_image)
+                        
+                        print(f"🔍 Статус: {status}, has_image: {has_image}")
+                        
+                        if status == 'OPEN' and has_image in ['False', 'false', False, '0', 0]:
+                            print(f"🔍 Найден незавершенный инцидент!")
+                            # Извлекаем ID инцидента из ключа
+                            key_str = key.decode() if isinstance(key, bytes) else str(key)
+                            incident_id = key_str.split(':')[-1]
+                            return self.get_incident(incident_id)
+            
+            return None
+            
+        except Exception as e:
+            print(f"Ошибка простой проверки: {e}")
+            return None
+
+    def get_pending_incident_for_user(self, user_id: str) -> Optional[Dict]:
+        """
+        Получает незавершенный инцидент пользователя (без фото)
+        
+        Args:
+            user_id: ID пользователя
+            
+        Returns:
+            Словарь с данными инцидента или None
+        """
+        try:
+            # Получаем все активные инциденты
+            active_incidents = self.redis.redis_client.smembers('roma_bot:active_incidents')
+            print(f"🔍 Отладка: ищем незавершенные инциденты для user_id={user_id}")
+            # Исправляем decode - проверяем тип
+            active_incidents_list = []
+            for incident_id in active_incidents:
+                if isinstance(incident_id, bytes):
+                    active_incidents_list.append(incident_id.decode())
+                else:
+                    active_incidents_list.append(str(incident_id))
+            print(f"🔍 Активные инциденты: {active_incidents_list}")
+            
+            for incident_id in active_incidents:
+                # Приводим к строке
+                incident_id_str = incident_id.decode() if isinstance(incident_id, bytes) else str(incident_id)
+                incident = self.get_incident(incident_id_str)
+                if not incident:
+                    continue
+                
+                print(f"🔍 Проверяем инцидент {incident_id_str}: status={incident.get('status')}, has_image={incident.get('has_image', False)}, user_id={incident.get('user_id')}")
+                
+                # Проверяем что инцидент открыт и без изображения
+                # Ищем по user_id в контексте или в full_message
+                if (incident.get('status') == 'OPEN' and 
+                    not incident.get('has_image', False)):
+                    
+                    # Проверяем есть ли user_id в контексте инцидента
+                    incident_user_id = incident.get('user_id')
+                    if incident_user_id == user_id:
+                        print(f"🔍 Найден незавершенный инцидент для пользователя: {incident_id_str}")
+                        return incident
+            
+            return None
+            
+        except Exception as e:
+            print(f"Ошибка поиска незавершенного инцидента: {e}")
+            return None

@@ -11,8 +11,10 @@ from telegram.constants import ChatAction
 import asyncio
 import re
 from services.voice_handler import VoiceHandler
-from telegram import Voice
+from utils.validators import validate_photo, get_file_extension_from_mime, format_file_size
+from telegram import Voice, PhotoSize
 from zoneinfo import ZoneInfo
+from models.incident import Incident
 
 async def show_typing(context, chat_id):
     """Показывает индикатор набора"""
@@ -101,9 +103,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     memory_service.add_message(user_id, "user", message_text)
     
     # Получаем контекст и историю
-    user_context = user_contexts.get(user_id)
+    user_context = user_contexts.get(str(user_id))
     conversation_history = memory_service.get_context(user_id)
     user_summary = memory_service.get_user_summary(user_id)
+    
+    # Проверяем, есть ли незавершенные инциденты (без фото) - используем простую проверку
+    pending_incident = incident_manager.get_pending_incident_for_user_simple(str(user_id))
+    print(f"🔍 Отладка: user_id={user_id}, pending_incident={pending_incident is not None}")
+    if pending_incident:
+        print(f"🔍 Найден незавершенный инцидент: {pending_incident['id']}, has_image={pending_incident.get('has_image', False)}")
+    
+    print(f"🔍 user_context: {user_context}")
+    waiting_for_photo = user_context and user_context.get('waiting_for_photo', False)
+    print(f"🔍 waiting_for_photo: {waiting_for_photo}")
+    print(f"🔍 Условие блокировки: pending_incident={pending_incident is not None}, waiting_for_photo={waiting_for_photo}")
+    
+    if pending_incident and not waiting_for_photo:
+        # Устанавливаем контекст ожидания фото для существующего инцидента
+        user_contexts[str(user_id)] = {
+            'waiting_for_photo': True,
+            'incident_id': pending_incident['id'],
+            'original_message': pending_incident.get('full_message', ''),
+            'author_info': author_info
+        }
+        
+        await update.message.reply_text(
+            f"📸 У вас есть незавершенный инцидент {pending_incident['id']}!\n\n"
+            f"Пожалуйста, сначала отправьте фото подтверждение для этого инцидента, "
+            f"а затем можете создать новый отчет."
+        )
+        return
     
     # Обрабатываем через AI с полным контекстом
     ai_response = ai_agent.process_message(
@@ -147,49 +176,39 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             deadline_reasoning = deadline_info['reasoning']
             incident.responsible_id = incident.get_responsible_id()
             
-            # Сохраняем в Sheets
-            sheets_ok = sheets_service.append_incident(incident)
-            
-            # Сохраняем в Redis для отслеживания
+            # НЕ отправляем никуда пока не получим фото!
+            # Только сохраняем в Redis для отслеживания
             incident_dict = incident.dict()
+            incident_dict['user_id'] = str(user_id)  # Сохраняем user_id как строку для поиска
             incident_manager.save_incident(incident_dict)
-            
-            # Отправляем в группу
-            telegram_ok = await telegram_service.send_to_group(incident.to_telegram_message())
-            
-            # Отправляем ответственному
-            if incident.responsible_id:
-                try:
-                    responsible_message = (
-                        f"🚨 Вам назначен новый инцидент!\n\n"
-                        f"{incident.to_telegram_message(include_deadline=True)}\n\n"
-                        f"💡 Обоснование срока: {deadline_reasoning}\n\n"
-                        f"Пожалуйста, решите проблему до дедлайна.\n"
-                        f"После решения отправьте:\n"
-                        f"/resolve {incident.id} [описание решения]"
-                    )
-                    await context.bot.send_message(
-                        chat_id=incident.responsible_id,
-                        text=responsible_message
-                    )
-                except Exception as e:
-                    print(f"Не удалось отправить ответственному: {e}")
+            print(f"💾 Инцидент {incident.id} сохранен в Redis (ожидает фото)")
             
             # Формируем ответ автору
             deadline_dt = datetime.fromisoformat(incident.deadline)
             deadline_str = deadline_dt.strftime('%d.%m.%Y %H:%M')
             
+            # Всегда запрашиваем фото (изображения сохраняются в Google Sheets)
+            print("📸 Запрашиваю фото подтверждение...")
+            
             base_response = (
-                f"✅ Инцидент зарегистрирован!\n\n"
+                f"✅ Отчет принят!\n\n"
                 f"📋 ID: {incident.id}\n"
                 f"📍 Филиал: {incident.branch}\n"
                 f"🏢 Отдел: {incident.department}\n"
                 f"⚠️ Приоритет: {incident.priority}\n"
                 f"⏰ Дедлайн: {deadline_str}\n"
-                f"💡 Обоснование: {deadline_reasoning}\n"
-                f"👤 Ответственный уведомлен\n\n"
-                f"Менеджеры займутся решением проблемы."
+                f"💡 Обоснование: {deadline_reasoning}\n\n"
+                f"📸 Теперь отправьте фото подтверждение проблемы.\n"
+                f"Только после получения фото отчет будет отправлен менеджерам."
             )
+            
+            # Устанавливаем контекст ожидания фото
+            user_contexts[str(user_id)] = {
+                'waiting_for_photo': True,
+                'incident_id': incident.id,
+                'original_message': full_message_with_author,
+                'author_info': author_info
+            }
             
             await update.message.reply_text(base_response)
             
@@ -205,9 +224,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 "deadline_reasoning": deadline_reasoning
             })
             
-            # Очищаем контекст
-            if user_id in user_contexts:
-                del user_contexts[user_id]
+            # Контекст не очищаем - ожидаем фото
         else:
             await update.message.reply_text(response_text)
             memory_service.add_message(user_id, "assistant", response_text)
@@ -215,15 +232,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif ai_response['type'] == 'clarification':
         # Обновляем контекст
         if not user_context:
-            user_contexts[user_id] = {
+            user_contexts[str(user_id)] = {
                 'original_message': message_text,
                 'partial_analysis': ai_response.get('incident_data', {}),
                 'author_info': author_info
             }
         else:
-            user_contexts[user_id]['original_message'] += f". {message_text}"
+            user_contexts[str(user_id)]['original_message'] += f". {message_text}"
             if ai_response.get('incident_data'):
-                user_contexts[user_id]['partial_analysis'].update(ai_response['incident_data'])
+                user_contexts[str(user_id)]['partial_analysis'].update(ai_response['incident_data'])
         
         await update.message.reply_text(response_text)
         memory_service.add_message(user_id, "assistant", response_text, {"type": "clarification"})
@@ -232,8 +249,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(response_text)
         memory_service.add_message(user_id, "assistant", response_text)
         
-        if user_id in user_contexts:
-            del user_contexts[user_id]
+        if str(user_id) in user_contexts:
+            del user_contexts[str(user_id)]
 
 async def rep_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /rep с глобальной статистикой"""
@@ -410,35 +427,27 @@ async def resolve_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
     
-    # Обновляем статус (БЕЗ resolved_by)
-    success = incident_manager.update_incident_status(
-        incident_id, 
-        'RESOLVED',
-        resolution
-    )
+    # Сохраняем решение и запрашиваем фото
+    incident['resolution'] = resolution
+    incident['resolved_by'] = username
+    incident['status'] = 'PENDING_PHOTO'  # Временный статус - ждем фото
+    incident_manager.save_incident(incident)
     
-    if success:
-        # Уведомляем в группу
-        completion_message = (
-            f"✅ Инцидент {incident_id} решен!\n\n"
-            f"📍 Филиал: {incident.get('branch', 'Неизвестно')}\n"
-            f"🏢 Отдел: {incident.get('department', 'Неизвестно')}\n"
-            f"📝 Проблема: {incident.get('short_description', 'Не указано')}\n"
-            f"✨ Решение: {resolution}\n"
-            f"👤 Решил: @{username}"
-        )
-        
-        try:
-            await telegram_service.send_to_group(completion_message)
-        except Exception as e:
-            print(f"Ошибка отправки в группу: {e}")
-        
-        await update.message.reply_text(
-            f"✅ Инцидент {incident_id} успешно закрыт!\n"
-            f"Решение: {resolution}"
-        )
-    else:
-        await update.message.reply_text("❌ Ошибка при обновлении статуса")
+    # Устанавливаем контекст ожидания фото решения
+    user_contexts[str(user_id)] = {
+        'waiting_for_solution_photo': True,
+        'incident_id': incident_id,
+        'resolution': resolution,
+        'resolved_by': username
+    }
+    
+    await update.message.reply_text(
+        f"✅ Решение принято!\n\n"
+        f"📋 ID: {incident_id}\n"
+        f"✨ Решение: {resolution}\n\n"
+        f"📸 Теперь отправьте фото подтверждения того, что проблема решена.\n"
+        f"Только после получения фото инцидент будет закрыт."
+    )
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Команда /status для проверки статуса инцидента"""
@@ -728,8 +737,8 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     "deadline_reasoning": deadline_reasoning
                 })
                 
-                if user_id in user_contexts:
-                    del user_contexts[user_id]
+                if str(user_id) in user_contexts:
+                    del user_contexts[str(user_id)]
             else:
                 await update.message.reply_text(response_text)
                 memory_service.add_message(user_id, "assistant", response_text)
@@ -737,15 +746,15 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif ai_response['type'] == 'clarification':
             # Обновляем контекст
             if not user_context:
-                user_contexts[user_id] = {
+                user_contexts[str(user_id)] = {
                     'original_message': text,
                     'partial_analysis': ai_response.get('incident_data', {}),
                     'author_info': author_info
                 }
             else:
-                user_contexts[user_id]['original_message'] += f". {text}"
+                user_contexts[str(user_id)]['original_message'] += f". {text}"
                 if ai_response.get('incident_data'):
-                    user_contexts[user_id]['partial_analysis'].update(ai_response['incident_data'])
+                    user_contexts[str(user_id)]['partial_analysis'].update(ai_response['incident_data'])
             
             await update.message.reply_text(response_text)
             memory_service.add_message(user_id, "assistant", response_text, {"type": "clarification"})
@@ -754,13 +763,338 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(response_text)
             memory_service.add_message(user_id, "assistant", response_text)
             
-            if user_id in user_contexts:
-                del user_contexts[user_id]
+            if str(user_id) in user_contexts:
+                del user_contexts[str(user_id)]
                 
     except Exception as e:
         print(f"Ошибка обработки голоса: {e}")
         await processing_msg.edit_text(
             "❌ Не удалось обработать голосовое сообщение. Попробуйте написать текстом."
+        )
+
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик фото сообщений"""
+    user_id = update.effective_user.id
+    chat_id = update.effective_chat.id
+    
+    # Игнорируем сообщения из группы
+    if str(chat_id) == settings.TELEGRAM_GROUP_CHAT_ID:
+        return
+    
+    if update.effective_chat.type != 'private':
+        return
+    
+    await show_typing(context, chat_id)
+    
+    # Проверяем, есть ли ожидающее фото в контексте
+    user_context = user_contexts.get(str(user_id))
+    print(f"🔍 Отладка: user_id={user_id}, user_context={user_context}")
+    print(f"🔍 Отладка: waiting_for_photo={user_context.get('waiting_for_photo') if user_context else None}")
+    print(f"🔍 Отладка: waiting_for_solution_photo={user_context.get('waiting_for_solution_photo') if user_context else None}")
+    
+    if not user_context or (not user_context.get('waiting_for_photo') and not user_context.get('waiting_for_solution_photo')):
+        print("⚠️ Получено фото без ожидания - игнорирую")
+        await update.message.reply_text(
+            "📸 Фото принято, но я не ожидал его. Отправьте текстовое сообщение о проблеме."
+        )
+        return
+    
+    # Определяем тип фото
+    if user_context.get('waiting_for_solution_photo'):
+        print(f"📸 Получено фото РЕШЕНИЯ для инцидента: {user_context['incident_id']}")
+        await handle_solution_photo(update, context, user_context, str(user_id))
+        return
+    else:
+        print(f"📸 Получено фото ПРОБЛЕМЫ для инцидента: {user_context['incident_id']}")
+    
+    try:
+        # Получаем фото
+        photo = update.message.photo[-1]  # Берем самое большое фото
+        file_id = photo.file_id
+        
+        # Скачиваем файл
+        print("⬇️ Скачиваю фото из Telegram...")
+        file = await context.bot.get_file(file_id)
+        file_data = await file.download_as_bytearray()
+        file_size = len(file_data)
+        print(f"✅ Фото скачано: {format_file_size(file_size)}")
+        
+        # Определяем расширение файла
+        # Telegram конвертирует все фото в JPEG, но можно попробовать определить по содержимому
+        file_extension = 'jpg'  # По умолчанию JPEG
+        
+        # Проверяем магические байты для определения реального формата
+        if file_data.startswith(b'\xff\xd8\xff'):
+            file_extension = 'jpg'
+        elif file_data.startswith(b'\x89PNG'):
+            file_extension = 'png'
+        elif file_data.startswith(b'GIF'):
+            file_extension = 'gif'
+        elif file_data.startswith(b'RIFF') and b'WEBP' in file_data[:12]:
+            file_extension = 'webp'
+            
+        print(f"📸 Формат фото: {file_extension}")
+        
+        # Валидируем фото
+        print("🔍 Валидирую фото...")
+        is_valid, error_msg = validate_photo(file_extension, file_size)
+        
+        if not is_valid:
+            print(f"❌ Фото не прошло валидацию: {error_msg}")
+            await update.message.reply_text(f"❌ {error_msg}")
+            return
+        
+        print("✅ Фото прошло валидацию")
+        
+        # Получаем инцидент из Redis
+        incident = incident_manager.get_incident(user_context['incident_id'])
+        if not incident:
+            print(f"❌ Инцидент {user_context['incident_id']} не найден в Redis")
+            await update.message.reply_text("❌ Инцидент не найден. Попробуйте создать новый отчет.")
+            return
+        
+        # Сначала добавляем инцидент в Google Sheets
+        print("📊 Добавляю инцидент в Google Sheets...")
+        
+        # Конвертируем responsible_id в строку если нужно
+        if incident.get('responsible_id') and isinstance(incident['responsible_id'], int):
+            incident['responsible_id'] = str(incident['responsible_id'])
+        
+        incident_obj = Incident(**incident)
+        sheets_ok = sheets_service.append_incident(incident_obj)
+        if not sheets_ok:
+            print("❌ Ошибка добавления в Google Sheets")
+            await update.message.reply_text("❌ Ошибка сохранения инцидента. Попробуйте еще раз.")
+            return
+        print("✅ Инцидент добавлен в Google Sheets")
+        
+        # Теперь вставляем изображение в Google Sheets
+        try:
+            problem_description = incident.get('short_description', '')
+            
+            success, result = sheets_service.insert_image(
+                bytes(file_data), 
+                user_context['incident_id'], 
+                problem_description,
+                file_extension
+            )
+            
+            if not success:
+                print(f"❌ Ошибка вставки в Sheets: {result}")
+                await update.message.reply_text(f"❌ Ошибка сохранения фото: {result}")
+                return
+            
+            print(f"✅ Фото вставлено в Google Sheets: {result}")
+        except Exception as e:
+            print(f"❌ Ошибка вставки изображения: {e}")
+            await update.message.reply_text(
+                "❌ Ошибка сохранения фото в таблице.\n"
+                "Попробуйте еще раз или обратитесь к администратору."
+            )
+            return
+        
+        # Обновляем инцидент с фото в Redis
+        incident_id = user_context['incident_id']
+        print(f"🔄 Обновляю инцидент {incident_id} с фото...")
+        
+        incident['photo_file_id'] = file_id
+        incident['has_image'] = True
+        incident_manager.save_incident(incident)
+        
+        # Обновляем в Google Sheets (с отметкой о наличии изображения)
+        print("📊 Обновляю инцидент в Google Sheets...")
+        incident_obj = Incident(**incident)
+        sheets_ok = sheets_service.update_incident_with_image(incident)
+        
+        # Отправляем уведомление в группу с фото
+        print("📤 Отправляю уведомление в группу с фото...")
+        try:
+            # Скачиваем фото для отправки в группу
+            file = await context.bot.get_file(file_id)
+            photo_data = await file.download_as_bytearray()
+            
+            # Отправляем фото с подписью
+            await context.bot.send_photo(
+                chat_id=settings.TELEGRAM_GROUP_CHAT_ID,
+                photo=bytes(photo_data),
+                caption=incident_obj.to_telegram_message()
+            )
+            print("✅ Уведомление в группу с фото отправлено")
+        except Exception as e:
+            print(f"❌ Ошибка отправки фото в группу: {e}")
+            # Fallback - отправляем только текст
+            await telegram_service.send_to_group(incident_obj.to_telegram_message())
+            print("✅ Уведомление в группу отправлено (только текст)")
+        
+        # Отправляем уведомление ответственному с фото
+        if incident.get('responsible_id'):
+            print(f"📤 Отправляю уведомление ответственному {incident['responsible_id']} с фото...")
+            try:
+                responsible_message = (
+                    f"🚨 Вам назначен новый инцидент!\n\n"
+                    f"{incident_obj.to_telegram_message(include_deadline=True)}\n\n"
+                    f"Пожалуйста, решите проблему до дедлайна.\n"
+                    f"После решения отправьте:\n"
+                    f"/resolve {incident['id']} [описание решения]"
+                )
+                
+                # Скачиваем фото для отправки ответственному
+                file = await context.bot.get_file(file_id)
+                photo_data = await file.download_as_bytearray()
+                
+                await context.bot.send_photo(
+                    chat_id=incident['responsible_id'],
+                    photo=bytes(photo_data),
+                    caption=responsible_message
+                )
+                print("✅ Уведомление ответственному с фото отправлено")
+            except Exception as e:
+                print(f"❌ Не удалось отправить ответственному: {e}")
+                # Fallback - отправляем только текст
+                try:
+                    await context.bot.send_message(
+                        chat_id=incident['responsible_id'],
+                        text=responsible_message
+                    )
+                    print("✅ Уведомление ответственному отправлено (только текст)")
+                except Exception as e2:
+                    print(f"❌ Не удалось отправить ответственному даже текст: {e2}")
+        
+        # Благодарим пользователя
+        print("✅ Обработка фото завершена успешно")
+        await update.message.reply_text(
+            "✅ Спасибо за фото подтверждение!\n\n"
+            "📸 Фото добавлено к инциденту в Google Sheets и отправлено менеджерам.\n"
+            "Они займутся решением проблемы."
+        )
+        
+        # Очищаем контекст
+        print("🧹 Очищаю контекст пользователя")
+        if str(user_id) in user_contexts:
+            del user_contexts[str(user_id)]
+            
+    except Exception as e:
+        print(f"Ошибка обработки фото: {e}")
+        await update.message.reply_text(
+            "❌ Произошла ошибка при обработке фото. Попробуйте еще раз."
+        )
+
+async def handle_solution_photo(update: Update, context: ContextTypes.DEFAULT_TYPE, user_context: dict, user_id: str):
+    """Обработчик фото решения"""
+    try:
+        # Получаем фото
+        photo = update.message.photo[-1]  # Берем самое большое фото
+        file_id = photo.file_id
+        
+        # Скачиваем файл
+        print("⬇️ Скачиваю фото решения из Telegram...")
+        file = await context.bot.get_file(file_id)
+        file_data = await file.download_as_bytearray()
+        file_size = len(file_data)
+        print(f"✅ Фото решения скачано: {format_file_size(file_size)}")
+        
+        # Определяем расширение файла
+        file_extension = 'jpg'  # По умолчанию JPEG
+        
+        # Проверяем магические байты для определения реального формата
+        if file_data.startswith(b'\xff\xd8\xff'):
+            file_extension = 'jpg'
+        elif file_data.startswith(b'\x89PNG'):
+            file_extension = 'png'
+        elif file_data.startswith(b'GIF'):
+            file_extension = 'gif'
+        elif file_data.startswith(b'RIFF') and b'WEBP' in file_data[:12]:
+            file_extension = 'webp'
+            
+        print(f"📸 Формат фото решения: {file_extension}")
+        
+        # Валидируем фото
+        print("🔍 Валидирую фото решения...")
+        is_valid, error_msg = validate_photo(file_extension, file_size)
+        
+        if not is_valid:
+            print(f"❌ Фото решения не прошло валидацию: {error_msg}")
+            await update.message.reply_text(f"❌ {error_msg}")
+            return
+        
+        print("✅ Фото решения прошло валидацию")
+        
+        # Получаем инцидент из Redis
+        incident = incident_manager.get_incident(user_context['incident_id'])
+        if not incident:
+            print(f"❌ Инцидент {user_context['incident_id']} не найден в Redis")
+            await update.message.reply_text("❌ Инцидент не найден. Попробуйте еще раз.")
+            return
+        
+        # Сохраняем фото решения
+        print("💾 Сохраняю фото решения...")
+        success, result = sheets_service.insert_solution_image(
+            bytes(file_data), 
+            user_context['incident_id'], 
+            user_context['resolution'],
+            file_extension
+        )
+        
+        if not success:
+            print(f"❌ Ошибка сохранения фото решения: {result}")
+            await update.message.reply_text(f"❌ Ошибка сохранения фото решения: {result}")
+            return
+        
+        print(f"✅ Фото решения сохранено: {result}")
+        
+        # Обновляем инцидент
+        incident['solution_photo_file_id'] = file_id
+        incident['has_solution_image'] = True
+        incident['status'] = 'RESOLVED'  # Теперь закрываем инцидент
+        incident_manager.save_incident(incident)
+        
+        # Обновляем в Google Sheets
+        print("📊 Обновляю инцидент в Google Sheets...")
+        incident_obj = Incident(**incident)
+        sheets_ok = sheets_service.update_incident_with_image(incident)
+        
+        # Уведомляем в группу с фото решения
+        print("📤 Отправляю уведомление в группу с фото решения...")
+        try:
+            completion_message = (
+                f"✅ Инцидент {incident['id']} решен!\n\n"
+                f"📍 Филиал: {incident.get('branch', 'Неизвестно')}\n"
+                f"🏢 Отдел: {incident.get('department', 'Неизвестно')}\n"
+                f"📝 Проблема: {incident.get('short_description', 'Не указано')}\n"
+                f"✨ Решение: {user_context['resolution']}\n"
+                f"👤 Решил: @{user_context['resolved_by']}"
+            )
+            
+            # Отправляем фото с подписью
+            await context.bot.send_photo(
+                chat_id=settings.TELEGRAM_GROUP_CHAT_ID,
+                photo=bytes(file_data),
+                caption=completion_message
+            )
+            print("✅ Уведомление в группу с фото решения отправлено")
+        except Exception as e:
+            print(f"❌ Ошибка отправки фото решения в группу: {e}")
+            # Fallback - отправляем только текст
+            await telegram_service.send_to_group(completion_message)
+            print("✅ Уведомление в группу отправлено (только текст)")
+        
+        # Благодарим пользователя
+        print("✅ Обработка фото решения завершена успешно")
+        await update.message.reply_text(
+            "✅ Спасибо за фото решения!\n\n"
+            "📸 Фото решения добавлено к инциденту и отправлено в группу.\n"
+            "Инцидент успешно закрыт!"
+        )
+        
+        # Очищаем контекст
+        print("🧹 Очищаю контекст пользователя")
+        if str(user_id) in user_contexts:
+            del user_contexts[str(user_id)]
+            
+    except Exception as e:
+        print(f"Ошибка обработки фото решения: {e}")
+        await update.message.reply_text(
+            "❌ Произошла ошибка при обработке фото решения. Попробуйте еще раз."
         )
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):

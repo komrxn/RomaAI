@@ -21,6 +21,10 @@ class Incident(BaseModel):
     deadline: Optional[str] = Field(default=None, description="Дедлайн решения")
     responsible_id: Optional[str] = Field(default=None, description="Telegram ID ответственного")
     completed_at: Optional[str] = Field(default=None, description="Время завершения")
+    photo_file_id: Optional[str] = Field(default=None, description="Telegram file_id фото")
+    has_image: bool = Field(default=False, description="Есть ли изображение в Google Sheets")
+    solution_photo_file_id: Optional[str] = Field(default=None, description="Telegram file_id фото решения")
+    has_solution_image: bool = Field(default=False, description="Есть ли фото решения")
     
     @classmethod
     def create_id(cls) -> str:
@@ -63,7 +67,6 @@ class Incident(BaseModel):
     
     def to_sheet_row(self) -> list:
         """Преобразование в строку для Google Sheets"""
-        # Добавим новую колонку для статуса (J)
         return [
             self.id,                           # A
             self.date,                         # B
@@ -74,7 +77,9 @@ class Incident(BaseModel):
             self.priority,                     # G
             self.full_message,                 # H
             self.manager_report,               # I
-            settings.INCIDENT_STATUSES[self.status]  # J - Статус
+            settings.INCIDENT_STATUSES[self.status],  # J - Статус
+            "",                                # K - Путь к фото инцидента (заполняется отдельно)
+            ""                                 # L - Путь к фото решения (заполняется отдельно)
         ]
     
     def to_telegram_message(self, include_deadline: bool = False) -> str:

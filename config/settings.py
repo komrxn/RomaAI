@@ -19,6 +19,7 @@ class Settings:
     GOOGLE_CREDENTIALS_FILE = os.getenv('GOOGLE_CREDENTIALS_FILE', 'credentials.json')
     SHEET_NAME = 'incidents'
     
+    
     # Redis настройки
     REDIS_HOST = os.getenv('REDIS_HOST', 'localhost')
     REDIS_PORT = int(os.getenv('REDIS_PORT', 6379))
@@ -46,6 +47,11 @@ class Settings:
     
     # Интервалы напоминаний (в минутах до дедлайна)
     REMINDER_INTERVALS = [60, 30, 10]  # За час, полчаса и 10 минут
+    
+    # Настройки фото
+    ALLOWED_PHOTO_FORMATS = ['jpg', 'jpeg', 'png', 'gif', 'webp']
+    MAX_PHOTO_SIZE_MB = 10
+    PHOTO_REQUEST_TIMEOUT = 300  # 5 минут на отправку фото
     
     # Ответственные по отделам
     DEPARTMENT_HEADS = {

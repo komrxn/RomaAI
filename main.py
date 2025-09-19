@@ -15,7 +15,8 @@ from bot.handlers import (
     status_command,
     myincidents_command,
     error_handler,
-    handle_voice
+    handle_voice,
+    handle_photo
 )
 from services.incident_manager import IncidentManager
 
@@ -63,6 +64,9 @@ def main():
 
     # Обработчик голосовых сообщений
     app.add_handler(MessageHandler(filters.VOICE & filters.ChatType.PRIVATE, handle_voice))
+
+    # Обработчик фото сообщений
+    app.add_handler(MessageHandler(filters.PHOTO & filters.ChatType.PRIVATE, handle_photo))
 
     # Обработчик ошибок
     app.add_error_handler(error_handler)

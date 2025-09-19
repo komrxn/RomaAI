@@ -18,6 +18,9 @@ ENV/
 credentials.json
 *credentials*.json
 token.json
+
+# Photos storage
+photos/
 *.json.enc
 
 # IDE
