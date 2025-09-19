@@ -1,9 +1,6 @@
-import logging
 import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
-# Импортируйте фильтр для голосовых
-from telegram.ext import MessageHandler, filters
 from config.settings import settings
 from bot.handlers import (
     start_command,
@@ -19,12 +16,7 @@ from bot.handlers import (
     handle_photo
 )
 from services.incident_manager import IncidentManager
-
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger(__name__)
+from utils.logger import logger
 
 async def post_init(application):
     """Запускает фоновые задачи после инициализации"""
